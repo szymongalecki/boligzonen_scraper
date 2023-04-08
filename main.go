@@ -49,8 +49,7 @@ func apartment(url string) (apartment Apartment) {
 			rooms, _ := strconv.Atoi(value)
 			apartment.Rooms = rooms
 		case "Størrelse":
-			value = strings.Trim(value, "m2")
-			value = strings.TrimSpace(value)
+			value = value[:len(value)-4]
 			area, _ := strconv.Atoi(value)
 			apartment.Area = area
 		case "Husleje":
@@ -177,9 +176,9 @@ func write(a Apartment, w *csv.Writer) {
 }
 
 func main() {
-	// start := "https://boligzonen.dk/lejebolig/kobenhavn-kommune"
-	// last := last("https://boligzonen.dk/lejebolig/kobenhavn-kommune")
-	links := links("https://boligzonen.dk/lejebolig/kobenhavn-kommune")
+	start := "https://boligzonen.dk/lejebolig/kobenhavn-kommune"
+	last := last("https://boligzonen.dk/lejebolig/kobenhavn-kommune")
+	// links := links("https://boligzonen.dk/lejebolig/kobenhavn-kommune")
 	channel := make(chan Apartment)
 	file, _ := os.Create("records.csv")
 	w := csv.NewWriter(file)
@@ -198,14 +197,19 @@ func main() {
 		}
 	}()
 
-	// scraper goroutines
-	for _, link := range links {
-		scrapers.Add(1)
-		go func(link string, channel chan Apartment) {
-			defer scrapers.Done()
+	// crawl pages
+	for url := start; url != last; url = next(url) {
+		links := links(url)
 
-			channel <- apartment(link)
-		}(link, channel)
+		// launch scraper goroutines
+		for _, link := range links {
+			scrapers.Add(1)
+			go func(link string, channel chan Apartment) {
+				defer scrapers.Done()
+
+				channel <- apartment(link)
+			}(link, channel)
+		}
 	}
 
 	// synchronisation
@@ -216,5 +220,4 @@ func main() {
 	// flush writer and close file
 	w.Flush()
 	file.Close()
-
 }
