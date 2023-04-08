@@ -1,9 +1,12 @@
 package main
 
 import (
+	"encoding/csv"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/gocolly/colly"
 )
@@ -107,17 +110,111 @@ func links(url string) (links []string) {
 	return links
 }
 
+func next(url string) (link string) {
+	c := colly.NewCollector()
+
+	c.OnRequest(func(r *colly.Request) {
+		r.Headers.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/111.0.0.0 Safari/537.36")
+		fmt.Println("Visiting", r.URL)
+	})
+
+	c.OnError(func(r *colly.Response, err error) {
+		fmt.Println("Error", err.Error())
+	})
+
+	c.OnResponse(func(r *colly.Response) {
+		fmt.Println("Response Code", r.StatusCode)
+	})
+
+	c.OnHTML("span.next a", func(h *colly.HTMLElement) {
+		rel := h.Attr("href")
+		root := "https://boligzonen.dk/"
+		link = root + rel
+		// fmt.Println(link)
+	})
+
+	c.Visit(url)
+	return link
+}
+
+func last(url string) (link string) {
+	c := colly.NewCollector()
+
+	c.OnRequest(func(r *colly.Request) {
+		r.Headers.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/111.0.0.0 Safari/537.36")
+		fmt.Println("Visiting", r.URL)
+	})
+
+	c.OnError(func(r *colly.Response, err error) {
+		fmt.Println("Error", err.Error())
+	})
+
+	c.OnResponse(func(r *colly.Response) {
+		fmt.Println("Response Code", r.StatusCode)
+	})
+
+	c.OnHTML("span.last a", func(h *colly.HTMLElement) {
+		rel := h.Attr("href")
+		root := "https://boligzonen.dk/"
+		link = root + rel
+		// fmt.Println(link)
+	})
+
+	c.Visit(url)
+	return link
+}
+
+func write(a Apartment, w *csv.Writer) {
+	row := []string{
+		fmt.Sprintf("%d", a.Ref),
+		fmt.Sprintf("%d", a.Rooms),
+		fmt.Sprintf("%d", a.Area),
+		fmt.Sprintf("%d", a.Rent),
+		fmt.Sprintf("%f", a.Latitude),
+		fmt.Sprintf("%f", a.Longitude),
+	}
+	w.Write(row)
+}
+
 func main() {
+	// start := "https://boligzonen.dk/lejebolig/kobenhavn-kommune"
+	// last := last("https://boligzonen.dk/lejebolig/kobenhavn-kommune")
 	links := links("https://boligzonen.dk/lejebolig/kobenhavn-kommune")
-	apartments := make(chan Apartment)
+	channel := make(chan Apartment)
+	file, _ := os.Create("records.csv")
+	w := csv.NewWriter(file)
 
+	// synchronisation
+	var scrapers sync.WaitGroup
+	var writer sync.WaitGroup
+
+	// csv writer
+	writer.Add(1)
+	go func() {
+		defer writer.Done()
+
+		for a := range channel {
+			write(a, w)
+		}
+	}()
+
+	// scraper goroutines
 	for _, link := range links {
-		go func(link string, apartments chan Apartment) {
-			apartments <- apartment(link)
-		}(link, apartments)
+		scrapers.Add(1)
+		go func(link string, channel chan Apartment) {
+			defer scrapers.Done()
+
+			channel <- apartment(link)
+		}(link, channel)
 	}
 
-	for i := 0; i < 18; i++ {
-		fmt.Println(<-apartments)
-	}
+	// synchronisation
+	scrapers.Wait()
+	close(channel)
+	writer.Wait()
+
+	// flush writer and close file
+	w.Flush()
+	file.Close()
+
 }
