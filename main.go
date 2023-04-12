@@ -20,16 +20,18 @@ type Apartment struct {
 	Longitude float64
 }
 
+const UserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/111.0.0.0 Safari/537.36"
+
 func apartment(url string) (apartment Apartment) {
 	c := colly.NewCollector()
 
 	c.OnRequest(func(r *colly.Request) {
-		r.Headers.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/111.0.0.0 Safari/537.36")
+		r.Headers.Set("User-Agent", UserAgent)
 		fmt.Println("Visiting", r.URL)
 	})
 
 	c.OnError(func(r *colly.Response, err error) {
-		fmt.Println("Error", err.Error())
+		fmt.Println("URL:", r.Request.URL, "failed with response:", r, "\nError:", err)
 	})
 
 	c.OnHTML(".reference-number", func(h *colly.HTMLElement) {
@@ -70,31 +72,20 @@ func apartment(url string) (apartment Apartment) {
 
 	})
 
-	// c.OnScraped(func(r *colly.Response) {
-	// 	enc := json.NewEncoder(os.Stdout)
-	// 	enc.SetIndent("", " ")
-	// 	enc.Encode(apartment)
-	// })
-
 	c.Visit(url)
-
 	return apartment
 }
 
-func links(url string) (links []string) {
+func linksOnPage(url string) (links []string) {
 	c := colly.NewCollector()
 
 	c.OnRequest(func(r *colly.Request) {
-		r.Headers.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/111.0.0.0 Safari/537.36")
-		fmt.Println("Visiting", r.URL)
+		r.Headers.Set("User-Agent", UserAgent)
+		fmt.Println("\nPage", r.URL)
 	})
 
 	c.OnError(func(r *colly.Response, err error) {
 		fmt.Println("Error", err.Error())
-	})
-
-	c.OnResponse(func(r *colly.Response) {
-		fmt.Println("Response Code", r.StatusCode)
 	})
 
 	c.OnHTML(".property-partial[href]", func(h *colly.HTMLElement) {
@@ -105,58 +96,46 @@ func links(url string) (links []string) {
 	})
 
 	c.Visit(url)
-
 	return links
 }
 
-func next(url string) (link string) {
+func nextPage(url string) (link string) {
 	c := colly.NewCollector()
 
 	c.OnRequest(func(r *colly.Request) {
-		r.Headers.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/111.0.0.0 Safari/537.36")
-		fmt.Println("Visiting", r.URL)
+		r.Headers.Set("User-Agent", UserAgent)
 	})
 
 	c.OnError(func(r *colly.Response, err error) {
 		fmt.Println("Error", err.Error())
-	})
-
-	c.OnResponse(func(r *colly.Response) {
-		fmt.Println("Response Code", r.StatusCode)
 	})
 
 	c.OnHTML("span.next a", func(h *colly.HTMLElement) {
 		rel := h.Attr("href")
 		root := "https://boligzonen.dk/"
 		link = root + rel
-		// fmt.Println(link)
 	})
 
 	c.Visit(url)
 	return link
 }
 
-func last(url string) (link string) {
+func lastPage(url string) (link string) {
 	c := colly.NewCollector()
 
 	c.OnRequest(func(r *colly.Request) {
-		r.Headers.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/111.0.0.0 Safari/537.36")
-		fmt.Println("Visiting", r.URL)
+		r.Headers.Set("User-Agent", UserAgent)
 	})
 
 	c.OnError(func(r *colly.Response, err error) {
 		fmt.Println("Error", err.Error())
 	})
 
-	c.OnResponse(func(r *colly.Response) {
-		fmt.Println("Response Code", r.StatusCode)
-	})
-
 	c.OnHTML("span.last a", func(h *colly.HTMLElement) {
 		rel := h.Attr("href")
 		root := "https://boligzonen.dk/"
 		link = root + rel
-		// fmt.Println(link)
+		fmt.Println("Last", link)
 	})
 
 	c.Visit(url)
@@ -176,18 +155,23 @@ func write(a Apartment, w *csv.Writer) {
 }
 
 func main() {
+	// start point and end point for scraping
 	start := "https://boligzonen.dk/lejebolig/kobenhavn-kommune"
-	last := last("https://boligzonen.dk/lejebolig/kobenhavn-kommune")
-	// links := links("https://boligzonen.dk/lejebolig/kobenhavn-kommune")
-	channel := make(chan Apartment)
-	file, _ := os.Create("records.csv")
-	w := csv.NewWriter(file)
+	last := lastPage("https://boligzonen.dk/lejebolig/kobenhavn-kommune")
 
-	// synchronisation
+	// create file and csv writer, add header
+	file, _ := os.Create("records.csv")
+	header := []string{"id", "rooms", "area", "rent", "latitude", "longitude"}
+	w := csv.NewWriter(file)
+	w.Write(header)
+
+	// channel with capacity of a single page, waitgroups for synchronisation
+	apartments_on_page := 18
+	channel := make(chan Apartment, apartments_on_page)
 	var scrapers sync.WaitGroup
 	var writer sync.WaitGroup
 
-	// csv writer
+	// launch csv writer goroutine
 	writer.Add(1)
 	go func() {
 		defer writer.Done()
@@ -198,26 +182,34 @@ func main() {
 	}()
 
 	// crawl pages
-	for url := start; url != last; url = next(url) {
-		links := links(url)
+	for url := start; url != last; url = nextPage(url) {
+		links := linksOnPage(url)
 
 		// launch scraper goroutines
 		for _, link := range links {
 			scrapers.Add(1)
 			go func(link string, channel chan Apartment) {
 				defer scrapers.Done()
-
 				channel <- apartment(link)
 			}(link, channel)
 		}
 	}
 
-	// synchronisation
+	// scrape last page
+	for _, link := range linksOnPage(last) {
+		scrapers.Add(1)
+		go func(link string, channel chan Apartment) {
+			defer scrapers.Done()
+			channel <- apartment(link)
+		}(link, channel)
+	}
+
+	// wait for all apartments to be sent through channel, close it, wait for writer goroutine
 	scrapers.Wait()
 	close(channel)
 	writer.Wait()
 
-	// flush writer and close file
+	// flush csv writer and close file
 	w.Flush()
 	file.Close()
 }
