@@ -4,6 +4,7 @@ import (
 	"encoding/csv"
 	"fmt"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -31,7 +32,7 @@ func apartment(url string) (apartment Apartment) {
 	})
 
 	c.OnError(func(r *colly.Response, err error) {
-		fmt.Println("URL:", r.Request.URL, "failed with response:", r, "\nError:", err)
+		fmt.Println("Error", err.Error())
 	})
 
 	c.OnHTML(".reference-number", func(h *colly.HTMLElement) {
@@ -76,7 +77,7 @@ func apartment(url string) (apartment Apartment) {
 	return apartment
 }
 
-func linksOnPage(url string) (links []string) {
+func linksToApartments(url string) (links []string) {
 	c := colly.NewCollector()
 
 	c.OnRequest(func(r *colly.Request) {
@@ -99,28 +100,7 @@ func linksOnPage(url string) (links []string) {
 	return links
 }
 
-func nextPage(url string) (link string) {
-	c := colly.NewCollector()
-
-	c.OnRequest(func(r *colly.Request) {
-		r.Headers.Set("User-Agent", UserAgent)
-	})
-
-	c.OnError(func(r *colly.Response, err error) {
-		fmt.Println("Error", err.Error())
-	})
-
-	c.OnHTML("span.next a", func(h *colly.HTMLElement) {
-		rel := h.Attr("href")
-		root := "https://boligzonen.dk/"
-		link = root + rel
-	})
-
-	c.Visit(url)
-	return link
-}
-
-func lastPage(url string) (link string) {
+func lastPage(url string) (last int) {
 	c := colly.NewCollector()
 
 	c.OnRequest(func(r *colly.Request) {
@@ -134,12 +114,14 @@ func lastPage(url string) (link string) {
 	c.OnHTML("span.last a", func(h *colly.HTMLElement) {
 		rel := h.Attr("href")
 		root := "https://boligzonen.dk/"
-		link = root + rel
-		fmt.Println("Last", link)
+		link := root + rel
+		re := regexp.MustCompile(`-?\d+`)
+		last, _ = strconv.Atoi(re.FindString(link))
+		fmt.Println("Last", last)
 	})
 
 	c.Visit(url)
-	return link
+	return last
 }
 
 func write(a Apartment, w *csv.Writer) {
@@ -155,9 +137,9 @@ func write(a Apartment, w *csv.Writer) {
 }
 
 func main() {
-	// start point and end point for scraping
-	start := "https://boligzonen.dk/lejebolig/kobenhavn-kommune"
-	last := lastPage("https://boligzonen.dk/lejebolig/kobenhavn-kommune")
+	// url for desired search (Rentals in Copenhagen), number of last page
+	url := "https://boligzonen.dk/lejebolig/kobenhavn-kommune"
+	last := lastPage(url)
 
 	// create file and csv writer, add header
 	file, _ := os.Create("records.csv")
@@ -166,8 +148,7 @@ func main() {
 	w.Write(header)
 
 	// channel with capacity of a single page, waitgroups for synchronisation
-	apartments_on_page := 18
-	channel := make(chan Apartment, apartments_on_page)
+	channel := make(chan Apartment)
 	var scrapers sync.WaitGroup
 	var writer sync.WaitGroup
 
@@ -182,8 +163,8 @@ func main() {
 	}()
 
 	// crawl pages
-	for url := start; url != last; url = nextPage(url) {
-		links := linksOnPage(url)
+	for page := 1; page <= last; page++ {
+		links := linksToApartments(url + "?page=" + strconv.Itoa(page))
 
 		// launch scraper goroutines
 		for _, link := range links {
@@ -193,15 +174,6 @@ func main() {
 				channel <- apartment(link)
 			}(link, channel)
 		}
-	}
-
-	// scrape last page
-	for _, link := range linksOnPage(last) {
-		scrapers.Add(1)
-		go func(link string, channel chan Apartment) {
-			defer scrapers.Done()
-			channel <- apartment(link)
-		}(link, channel)
 	}
 
 	// wait for all apartments to be sent through channel, close it, wait for writer goroutine
